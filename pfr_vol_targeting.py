@@ -59,7 +59,7 @@ def load_processed_assets():
         q90_th = np.quantile(sig_train, 0.90)
         
         # Run flagship binary signal (1 = Long active, 0 = Cash)
-        active_flag = simulate_asset_strategy(feat, q90_th, min_hold=16, max_hold=36)
+        active_flag, _ = simulate_asset_strategy(feat, q90_th, min_hold=16, max_hold=36)
         
         # Realized annualized volatility
         feat["ann_vol"] = feat["pct_return"].rolling(VOL_WINDOW).std() * ANN_FACTOR
