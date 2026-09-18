@@ -42,17 +42,25 @@ def load_config():
         return json.load(f)
 
 def load_state():
-    if not os.path.exists(STATE_FILE):
-        default_state = {
-            "last_check_time": None,
+    default_state = {
+        "last_check_time": None,
+        "portfolio_gross_exposure": 0.0,
+        "positions": {s: {"in_position": False, "entry_time": None, "entry_price": 0.0, "bars_held": 0, "weight": 0.0} for s in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]},
+        "challenger_noresp": {
             "portfolio_gross_exposure": 0.0,
-            "positions": {s: {"in_position": False, "entry_time": None, "entry_price": 0.0, "bars_held": 0, "weight": 0.0} for s in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]},
-            "history": []
-        }
+            "positions": {s: {"in_position": False, "entry_time": None, "entry_price": 0.0, "bars_held": 0, "weight": 0.0} for s in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]}
+        },
+        "history": []
+    }
+    if not os.path.exists(STATE_FILE):
         save_state(default_state)
         return default_state
     with open(STATE_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+        st = json.load(f)
+    if "challenger_noresp" not in st:
+        st["challenger_noresp"] = default_state["challenger_noresp"]
+        save_state(st)
+    return st
 
 def save_state(state):
     with open(STATE_FILE, "w", encoding="utf-8") as f:
@@ -150,25 +158,13 @@ def compute_live_pfr(df):
 # LIVE SIGNAL & PORTFOLIO EVALUATOR
 # ============================================================
 
-def evaluate_live_market(config, state):
-    symbols = config["strategy"]["symbols"]
-    q90_map = config["strategy"]["q90_thresholds"]
-    min_hold = config["strategy"]["min_hold_hours"]
-    max_hold = config["strategy"]["max_hold_hours"]
-    rebal_buffer = config["strategy"]["rebalance_buffer"]
-    
-    market_snapshot = {}
+def evaluate_single_track(symbols, q90_map, min_hold, max_hold, rebal_buffer, 
+                          bars_dict, positions_dict, require_resp, model_name):
+    snapshot = {}
     events = []
     
-    # 1. Evaluate individual assets
     for sym in symbols:
-        df_raw = fetch_live_klines(sym, limit=250)
-        df_feat = compute_live_pfr(df_raw)
-        
-        # Last closed bar is iloc[-2] (or iloc[-1] if running right after hour close)
-        # We look at the latest completed candle
-        last_bar = df_feat.iloc[-1]
-        
+        last_bar = bars_dict[sym]
         current_price = float(last_bar["close"])
         sig_resid = float(last_bar["directional_friction_resid"])
         resp_z = float(last_bar["response_z"])
@@ -177,23 +173,23 @@ def evaluate_live_market(config, state):
         bar_time = str(last_bar["open_time"])
         
         q90_th = q90_map.get(sym, 0.055)
-        pos_info = state["positions"].get(sym, {"in_position": False, "entry_time": None, "entry_price": 0.0, "bars_held": 0, "weight": 0.0})
+        pos_info = positions_dict.get(sym, {"in_position": False, "entry_time": None, "entry_price": 0.0, "bars_held": 0, "weight": 0.0})
         
         in_pos = pos_info["in_position"]
         bars_held = pos_info["bars_held"]
         action = "HOLD"
         
         if not in_pos:
-            # Check Entry Condition
             cond_macro = (current_price > sma200)
             cond_friction = (sig_resid >= q90_th)
-            cond_response = (resp_z > 0)
+            cond_response = (resp_z > 0) if require_resp else True
             
             if cond_macro and cond_friction and cond_response:
                 action = "BUY_ENTRY"
                 in_pos = True
                 bars_held = 0
                 events.append({
+                    "model": model_name,
                     "symbol": sym,
                     "type": "ENTRY",
                     "price": current_price,
@@ -203,7 +199,6 @@ def evaluate_live_market(config, state):
                 })
         else:
             bars_held += 1
-            # Check Exit Condition
             exit_max = (bars_held >= max_hold)
             exit_sig = (bars_held >= min_hold) and (sig_resid < 0.0)
             
@@ -213,6 +208,7 @@ def evaluate_live_market(config, state):
                 reason = "Max Hold Reached" if exit_max else "Friction Decay (< 0)"
                 pnl_pct = (current_price / pos_info["entry_price"] - 1.0) * 100 if pos_info["entry_price"] > 0 else 0.0
                 events.append({
+                    "model": model_name,
                     "symbol": sym,
                     "type": "EXIT",
                     "price": current_price,
@@ -223,7 +219,7 @@ def evaluate_live_market(config, state):
                 })
                 bars_held = 0
                 
-        market_snapshot[sym] = {
+        snapshot[sym] = {
             "price": current_price,
             "sig_resid": sig_resid,
             "q90_th": q90_th,
@@ -237,85 +233,114 @@ def evaluate_live_market(config, state):
             "action": action
         }
         
-    # 2. Compute Risk Parity Target Weights
-    active_symbols = [s for s in symbols if market_snapshot[s]["in_position"]]
-    n_active = len(active_symbols)
-    
-    target_weights = {}
-    if n_active == 0:
+    # Risk Parity weights
+    active_syms = [s for s in symbols if snapshot[s]["in_position"]]
+    target_w = {}
+    if len(active_syms) == 0:
         for s in symbols:
-            target_weights[s] = 0.0
+            target_w[s] = 0.0
     else:
-        # Inverse Volatility sizing
-        inv_vols = {s: 1.0 / max(0.05, market_snapshot[s]["ann_vol"]) for s in active_symbols}
+        inv_vols = {s: 1.0 / max(0.05, snapshot[s]["ann_vol"]) for s in active_syms}
         sum_inv = sum(inv_vols.values())
         for s in symbols:
-            if s in active_symbols:
-                base_w = inv_vols[s] / sum_inv
-                target_weights[s] = round(base_w, 4)
-            else:
-                target_weights[s] = 0.0
-                
-    # 3. Update state with rebalancing buffer
+            target_w[s] = round(inv_vols[s] / sum_inv, 4) if s in active_syms else 0.0
+            
     for s in symbols:
-        old_w = state["positions"][s].get("weight", 0.0)
-        new_w = target_weights[s]
-        
-        # Check rebalance
+        old_w = positions_dict[s].get("weight", 0.0)
+        new_w = target_w[s]
         if abs(new_w - old_w) >= rebal_buffer or (old_w == 0 and new_w > 0) or (new_w == 0 and old_w > 0):
-            state["positions"][s]["weight"] = new_w
+            positions_dict[s]["weight"] = new_w
             if old_w > 0 and new_w > 0 and abs(new_w - old_w) >= rebal_buffer:
                 events.append({
+                    "model": model_name,
                     "symbol": s,
                     "type": "REBALANCE",
                     "old_weight": old_w,
                     "new_weight": new_w
                 })
-                
-        state["positions"][s]["in_position"] = market_snapshot[s]["in_position"]
-        state["positions"][s]["bars_held"] = market_snapshot[s]["bars_held"]
-        if market_snapshot[s]["action"] == "BUY_ENTRY":
-            state["positions"][s]["entry_time"] = market_snapshot[s]["bar_time"]
-            state["positions"][s]["entry_price"] = market_snapshot[s]["price"]
-        elif market_snapshot[s]["action"] == "SELL_EXIT":
-            state["positions"][s]["entry_time"] = None
-            state["positions"][s]["entry_price"] = 0.0
+        positions_dict[s]["in_position"] = snapshot[s]["in_position"]
+        positions_dict[s]["bars_held"] = snapshot[s]["bars_held"]
+        if snapshot[s]["action"] == "BUY_ENTRY":
+            positions_dict[s]["entry_time"] = snapshot[s]["bar_time"]
+            positions_dict[s]["entry_price"] = snapshot[s]["price"]
+        elif snapshot[s]["action"] == "SELL_EXIT":
+            positions_dict[s]["entry_time"] = None
+            positions_dict[s]["entry_price"] = 0.0
             
+    return snapshot, events
+
+def evaluate_live_market(config, state):
+    symbols = config["strategy"]["symbols"]
+    q90_map = config["strategy"]["q90_thresholds"]
+    min_hold = config["strategy"]["min_hold_hours"]
+    max_hold = config["strategy"]["max_hold_hours"]
+    rebal_buffer = config["strategy"]["rebalance_buffer"]
+    
+    # Fetch live data once for all symbols
+    bars_dict = {}
+    for sym in symbols:
+        df_raw = fetch_live_klines(sym, limit=250)
+        df_feat = compute_live_pfr(df_raw)
+        bars_dict[sym] = df_feat.iloc[-1]
+        
+    # Track 1: Flagship (require_resp = True)
+    flag_snap, flag_events = evaluate_single_track(
+        symbols, q90_map, min_hold, max_hold, rebal_buffer,
+        bars_dict, state["positions"], require_resp=True, model_name="Flagship_Resp"
+    )
+    
+    # Track 2: Challenger Candidate (require_resp = False)
+    chlg_snap, chlg_events = evaluate_single_track(
+        symbols, q90_map, min_hold, max_hold, rebal_buffer,
+        bars_dict, state["challenger_noresp"]["positions"], require_resp=False, model_name="Challenger_NoResp"
+    )
+    
     state["last_check_time"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     state["portfolio_gross_exposure"] = round(sum(state["positions"][s]["weight"] for s in symbols), 4)
+    state["challenger_noresp"]["portfolio_gross_exposure"] = round(sum(state["challenger_noresp"]["positions"][s]["weight"] for s in symbols), 4)
     save_state(state)
     
-    # Append-only scientific audit logging
-    log_forward_test(market_snapshot, events, state)
+    all_events = flag_events + chlg_events
     
-    return market_snapshot, events, state
+    # Dual-track append-only audit logging
+    log_forward_test_dual(flag_snap, chlg_snap, all_events, state)
+    
+    return flag_snap, chlg_snap, flag_events, chlg_events, state
 
-def log_forward_test(snapshot, events, state):
+def log_forward_test_dual(flag_snap, chlg_snap, events, state):
     from pathlib import Path
     log_dir = Path("pfr_output")
     log_dir.mkdir(parents=True, exist_ok=True)
     
-    # 1. Hourly signal snapshot log
+    # 1. Hourly dual signal snapshot log
     log_file = log_dir / "forward_test_log.csv"
     file_exists = log_file.exists()
     
     rows = []
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    for sym, d in snapshot.items():
-        w = state["positions"][sym]["weight"]
+    for sym, fd in flag_snap.items():
+        cd = chlg_snap[sym]
+        fw = state["positions"][sym]["weight"]
+        cw = state["challenger_noresp"]["positions"][sym]["weight"]
         rows.append({
             "timestamp": now_str,
-            "bar_time": d["bar_time"],
+            "bar_time": fd["bar_time"],
             "symbol": sym,
-            "price": d["price"],
-            "sig_resid": round(d["sig_resid"], 6),
-            "q90_th": round(d["q90_th"], 6),
-            "response_z": round(d["resp_z"], 4),
-            "above_sma200": int(d["above_sma200"]),
-            "in_position": int(d["in_position"]),
-            "bars_held": d["bars_held"],
-            "weight": round(w, 4),
-            "action": d["action"]
+            "price": fd["price"],
+            "sig_resid": round(fd["sig_resid"], 6),
+            "q90_th": round(fd["q90_th"], 6),
+            "response_z": round(fd["resp_z"], 4),
+            "above_sma200": int(fd["above_sma200"]),
+            # Flagship (Resp=True)
+            "flagship_pos": int(fd["in_position"]),
+            "flagship_bars": fd["bars_held"],
+            "flagship_weight": round(fw, 4),
+            "flagship_action": fd["action"],
+            # Challenger (Resp=False)
+            "challenger_pos": int(cd["in_position"]),
+            "challenger_bars": cd["bars_held"],
+            "challenger_weight": round(cw, 4),
+            "challenger_action": cd["action"]
         })
     df_rows = pd.DataFrame(rows)
     df_rows.to_csv(log_file, mode="a", index=False, header=not file_exists)
@@ -327,6 +352,7 @@ def log_forward_test(snapshot, events, state):
     for e in events:
         if e["type"] == "EXIT":
             trade_rows.append({
+                "model": e["model"],
                 "symbol": e["symbol"],
                 "exit_time": now_str,
                 "exit_price": e["price"],
@@ -337,6 +363,7 @@ def log_forward_test(snapshot, events, state):
             })
     if trade_rows:
         pd.DataFrame(trade_rows).to_csv(trade_file, mode="a", index=False, header=not t_exists)
+
 
 
 # ============================================================
@@ -440,6 +467,16 @@ def format_alert_message(market_snapshot, events, state):
     else:
         lines.append("👉 *Özet:* Pozisyonlar taşınıyor. Çıkış sinyali geldiğinde otomatik bildirim gönderilecektir.")
         
+    # 6. Shadow Tracking for Challenger NoResp
+    lines.append("\n🔬 *[Paralel Aday: Challenger NoResp Modeli]:*")
+    chlg_exp = state["challenger_noresp"]["portfolio_gross_exposure"] * 100
+    lines.append(f"• NoResp Toplam Pozisyon: *%{chlg_exp:.1f}*")
+    for sym in market_snapshot.keys():
+        name = friendly_names.get(sym, sym)
+        cs = state["challenger_noresp"]["positions"][sym]
+        st_c = f"🟢 %{cs['weight']*100:.1f} ({cs['bars_held']}. saat)" if cs["in_position"] else "⚪ Nakit"
+        lines.append(f"  • {name}: {st_c}")
+        
     return "\n".join(lines)
 
 def send_whatsapp_alert(message_text, config):
@@ -488,8 +525,8 @@ def run_check():
     config = load_config()
     state = load_state()
     
-    snapshot, events, updated_state = evaluate_live_market(config, state)
-    msg = format_alert_message(snapshot, events, updated_state)
+    flag_snap, chlg_snap, flag_events, chlg_events, updated_state = evaluate_live_market(config, state)
+    msg = format_alert_message(flag_snap, flag_events, updated_state)
     
     send_whatsapp_alert(msg, config)
 
