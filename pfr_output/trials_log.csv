@@ -1,0 +1,5 @@
+trial_id,date,category,hypothesis,parameters,is_sharpe,oos_sharpe,oos_max_dd,turnover,verdict,notes
+TR-001,2026-09-17,Capital Allocation,Equal-weight 1/N allocation across active PFR signals,"equal_weight, buffer=0.05",0.54,0.68,-0.422,641,BASELINE,"Simple baseline, but high drawdowns due to unweighted ETH/SOL exposure"
+TR-002,2026-09-17,Capital Allocation,Inverse Volatility (Risk Parity) dampens high-beta asset drag without adding free tuning parameters,"risk_parity, vol_window=48h, buffer=0.05",0.57,0.72,-0.293,373,ACCEPTED,"Best risk-adjusted model. Lowest turnover, cuts drawdown by 30%, no arbitrary target vol parameter"
+TR-003,2026-09-17,Capital Allocation,Conservative 25% portfolio vol target minimizes drawdowns,"vol_target=0.25, max_lev=1.0, buffer=0.05",0.56,0.54,-0.168,349,REJECTED,Excessive cash drag penalizes Sharpe (0.54). Over-parameterized compared to M2
+TR-004,2026-09-17,Capital Allocation,Balanced 35% portfolio vol target matches crypto regime,"vol_target=0.35, max_lev=1.0, buffer=0.05",0.56,0.59,-0.218,457,REJECTED,Underperforms M2 in Sharpe (0.59 vs 0.72) and has higher turnover (457 vs 373)
