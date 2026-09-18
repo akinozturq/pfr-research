@@ -1,0 +1,8 @@
+fold,train_period,test_period,selected_model,selected_q,selected_hold,selected_resp,selected_macro,is_sharpe,is_trades,oos_sharpe,oos_return,oos_max_dd,oos_trades,oos_win_rate,flagship_oos_sharpe,flagship_oos_return,wfe
+1,2020-01 to 2021-07,2021-07 to 2022-04,Q90_h24-48_noresp_sma200,Q90,24-48h,False,SMA200,1.53,78,1.72,+45.2%,-16.2%,38,63.2%,1.26,+23.2%,1.12
+2,2020-10 to 2022-04,2022-04 to 2023-01,Q90_h24-36_resp_nomacro,Q90,24-36h,True,None,1.67,113,-0.32,-13.8%,-32.1%,45,53.3%,0.32,+2.8%,-0.19
+3,2021-07 to 2023-01,2023-01 to 2023-10,Q80_h24-36_resp_nomacro,Q80,24-36h,True,None,1.5,189,0.97,+17.9%,-18.2%,83,55.4%,1.46,+19.1%,0.65
+4,2022-04 to 2023-10,2023-10 to 2024-07,Q90_h16-36_resp_nomacro,Q90,16-36h,True,None,1.12,131,1.9,+49.4%,-14.3%,77,58.4%,1.76,+35.0%,1.7
+5,2023-01 to 2024-07,2024-07 to 2025-04,Q95_h24-48_noresp_nomacro,Q95,24-48h,False,None,2.29,80,-0.37,-16.2%,-37.0%,53,50.9%,-1.27,-22.2%,-0.16
+6,2023-10 to 2025-04,2025-04 to 2026-01,Q95_h16-24_noresp_sma200,Q95,16-24h,False,SMA200,1.43,53,1.93,+29.2%,-6.7%,22,54.5%,1.47,+22.6%,1.35
+7,2024-07 to 2026-01,2026-01 to 2026-09,Q95_h24-48_noresp_sma200,Q95,24-48h,False,SMA200,1.39,39,1.41,+19.0%,-9.5%,18,50.0%,-0.24,-3.7%,1.01

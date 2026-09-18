@@ -181,14 +181,21 @@ def build_grid(q_dict):
 # WALK-FORWARD EXECUTION PIPELINE
 # ============================================================
 
-def run_wfa():
+def run_wfa(symbol="BTCUSDT"):
+    sym_clean = symbol.upper()
     print("=" * 75)
-    print("PFR WALK-FORWARD ANALYSIS (WFA) — BTCUSDT")
+    print(f"PFR WALK-FORWARD ANALYSIS (WFA) — {sym_clean}")
     print(f"Train: {TRAIN_MONTHS} Months | Test: {TEST_MONTHS} Months | Step: {STEP_MONTHS} Months (Non-Overlapping)")
     print(f"Execution Cost: {COST_BPS} bps | Model Space: 128 Trials per Fold")
     print("=" * 75)
     
-    df = pd.read_csv(DATA_FILE)
+    data_file = OUTPUT_DIR / f"data_{sym_clean.lower()}_1h.csv"
+    if not data_file.exists():
+        fallback = BASE_DIR / f"data_{sym_clean.lower()}_1h.csv"
+        if fallback.exists():
+            data_file = fallback
+            
+    df = pd.read_csv(data_file)
     df["open_time"] = pd.to_datetime(df["open_time"], format="ISO8601")
     df = df.sort_values("open_time").reset_index(drop=True)
     
@@ -198,7 +205,7 @@ def run_wfa():
     df = compute_base_features(df)
     
     end_dt = df["open_time"].max()
-    cur_start = pd.Timestamp("2020-01-01", tz="UTC")
+    cur_start = pd.Timestamp("2020-01-01", tz="UTC") if sym_clean != "SOLUSDT" else pd.Timestamp("2020-09-01", tz="UTC")
     
     fold_records = []
     stitched_oos_returns = []
@@ -351,44 +358,48 @@ def run_wfa():
     total_flag_m = quick_metrics(stitched_flag)
     total_bh_m = quick_metrics(stitched_bh)
     
+    sym_prefix = sym_clean.lower().replace("usdt", "")
+    
     # Plotting continuous walk-forward curve
     plt.figure(figsize=(14, 7))
     plt.plot(stitched_times, total_oos_m["equity"], label=f"WFA Adaptive Model (Sharpe: {total_oos_m['sharpe']:.2f}, MaxDD: {total_oos_m['max_drawdown']*100:.1f}%)", color="blue", lw=1.8)
     plt.plot(stitched_times, total_flag_m["equity"], label=f"Static Flagship v0.4 (Sharpe: {total_flag_m['sharpe']:.2f}, MaxDD: {total_flag_m['max_drawdown']*100:.1f}%)", color="green", lw=1.8, linestyle="--")
-    plt.plot(stitched_times, total_bh_m["equity"], label=f"BTC Buy & Hold (Sharpe: {total_bh_m['sharpe']:.2f}, MaxDD: {total_bh_m['max_drawdown']*100:.1f}%)", color="gray", lw=1.2, alpha=0.6)
+    plt.plot(stitched_times, total_bh_m["equity"], label=f"{sym_clean} Buy & Hold (Sharpe: {total_bh_m['sharpe']:.2f}, MaxDD: {total_bh_m['max_drawdown']*100:.1f}%)", color="gray", lw=1.2, alpha=0.6)
     
-    plt.title("BTCUSDT Walk-Forward Continuous Out-of-Sample Equity Curves (2021 - 2026)", fontsize=13, fontweight="bold")
+    start_yr = pd.to_datetime(stitched_times[0]).year if len(stitched_times) > 0 else 2021
+    end_yr = pd.to_datetime(stitched_times[-1]).year if len(stitched_times) > 0 else 2026
+    plt.title(f"{sym_clean} Walk-Forward Continuous Out-of-Sample Equity Curves ({start_yr} - {end_yr})", fontsize=13, fontweight="bold")
     plt.xlabel("Date", fontsize=11)
     plt.ylabel("Cumulative Growth (Base = 1.0)", fontsize=11)
     plt.grid(alpha=0.25)
     plt.legend(loc="upper left", fontsize=10)
     plt.tight_layout()
-    chart_path = OUTPUT_DIR / "pfr_wfa_btc_equity.png"
+    chart_path = OUTPUT_DIR / f"pfr_wfa_{sym_prefix}_equity.png"
     plt.savefig(chart_path, dpi=200)
     plt.close()
     
     # Save CSV
-    csv_path = OUTPUT_DIR / "pfr_wfa_btc_results.csv"
+    csv_path = OUTPUT_DIR / f"pfr_wfa_{sym_prefix}_results.csv"
     df_folds.to_csv(csv_path, index=False)
     
     # --------------------------------------------------------
     # REPORTING & PARAMETER STABILITY SUMMARY
     # --------------------------------------------------------
     print("\n" + "=" * 75)
-    print("WALK-FORWARD FOLD-BY-FOLD AUDIT TABLE (BTCUSDT)")
+    print(f"WALK-FORWARD FOLD-BY-FOLD AUDIT TABLE ({sym_clean})")
     print("=" * 75)
     cols_display = ["fold", "train_period", "test_period", "selected_q", "selected_hold", "selected_resp", "selected_macro", "is_sharpe", "oos_sharpe", "flagship_oos_sharpe", "wfe", "oos_trades"]
     print(df_folds[cols_display].to_string(index=False))
     
     print("\n" + "=" * 75)
-    print("OVERALL 5-YEAR STITCHED OUT-OF-SAMPLE PERFORMANCE (July 2021 - Sep 2026)")
+    print(f"OVERALL STITCHED OUT-OF-SAMPLE PERFORMANCE ({start_yr} - {end_yr})")
     print("=" * 75)
     print(f"Adaptive WFA Model : Total Return: {total_oos_m['total_return']*100:+.1f}% | Sharpe: {total_oos_m['sharpe']:.2f} | Max DD: {total_oos_m['max_drawdown']*100:.1f}%")
     print(f"Static Flagship v0.4: Total Return: {total_flag_m['total_return']*100:+.1f}% | Sharpe: {total_flag_m['sharpe']:.2f} | Max DD: {total_flag_m['max_drawdown']*100:.1f}%")
-    print(f"BTC Buy & Hold      : Total Return: {total_bh_m['total_return']*100:+.1f}% | Sharpe: {total_bh_m['sharpe']:.2f} | Max DD: {total_bh_m['max_drawdown']*100:.1f}%")
+    print(f"{sym_clean:<19}: Total Return: {total_bh_m['total_return']*100:+.1f}% | Sharpe: {total_bh_m['sharpe']:.2f} | Max DD: {total_bh_m['max_drawdown']*100:.1f}%")
     
     print("\n" + "=" * 75)
-    print("PARAMETER STABILITY ANALYSIS")
+    print(f"PARAMETER STABILITY ANALYSIS ({sym_clean})")
     print("=" * 75)
     print("Selected Entry Quantile Distribution:")
     print(df_folds["selected_q"].value_counts().to_string())
@@ -402,4 +413,8 @@ def run_wfa():
     return df_folds
 
 if __name__ == "__main__":
-    run_wfa()
+    import argparse
+    parser = argparse.ArgumentParser(description="PFR Walk-Forward Analysis Engine")
+    parser.add_argument("--symbol", type=str, default="BTCUSDT", help="Asset symbol (e.g. BTCUSDT, ETHUSDT, SOLUSDT)")
+    args = parser.parse_args()
+    run_wfa(symbol=args.symbol)
